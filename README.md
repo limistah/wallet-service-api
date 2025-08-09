@@ -22,8 +22,8 @@ Before running this project, ensure you have the following installed:
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
-   cd voyatek-test
+   git clone https://github.com/limistah/wallet-service-api
+   cd wallet-service-api
    ```
 
 2. **Install dependencies**
