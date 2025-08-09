@@ -12,7 +12,6 @@ import (
 // AuthMiddleware creates a middleware function for JWT authentication
 func AuthMiddleware(jwtService *auth.JWTService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get the Authorization header
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -35,7 +34,6 @@ func AuthMiddleware(jwtService *auth.JWTService) gin.HandlerFunc {
 			return
 		}
 
-		// Extract the token
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		fmt.Println(tokenString)
 		if tokenString == "" {
@@ -48,7 +46,6 @@ func AuthMiddleware(jwtService *auth.JWTService) gin.HandlerFunc {
 			return
 		}
 
-		// Validate the token
 		claims, err := jwtService.ValidateToken(tokenString)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -60,7 +57,6 @@ func AuthMiddleware(jwtService *auth.JWTService) gin.HandlerFunc {
 			return
 		}
 
-		// Set user information in context for use in handlers
 		c.Set("user_id", claims.UserID)
 		c.Set("user_email", claims.Email)
 

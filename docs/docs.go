@@ -491,7 +491,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Retrieve paginated transaction history for the authenticated user's wallet",
+                "description": "Retrieve cursor-paginated transaction history for the authenticated user's wallet",
                 "consumes": [
                     "application/json"
                 ],
@@ -504,10 +504,9 @@ const docTemplate = `{
                 "summary": "Get transaction history",
                 "parameters": [
                     {
-                        "type": "integer",
-                        "default": 1,
-                        "description": "Page number",
-                        "name": "page",
+                        "type": "string",
+                        "description": "Cursor for pagination",
+                        "name": "cursor",
                         "in": "query"
                     },
                     {
@@ -811,6 +810,23 @@ const docTemplate = `{
                 }
             }
         },
+        "CursorPaginationMeta": {
+            "type": "object",
+            "properties": {
+                "has_next_page": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "next_cursor": {
+                    "type": "string",
+                    "example": "eyJpZCI6MTAwLCJjcmVhdGVkX2F0IjoiMjAyMy0wMS0wMVQwMDowMDowMFoifQ=="
+                },
+                "page_size": {
+                    "type": "integer",
+                    "example": 20
+                }
+            }
+        },
         "ErrorResponse": {
             "type": "object",
             "properties": {
@@ -878,32 +894,11 @@ const docTemplate = `{
                 }
             }
         },
-        "PaginationMeta": {
-            "type": "object",
-            "properties": {
-                "page": {
-                    "type": "integer",
-                    "example": 1
-                },
-                "page_size": {
-                    "type": "integer",
-                    "example": 20
-                },
-                "total": {
-                    "type": "integer",
-                    "example": 100
-                },
-                "total_pages": {
-                    "type": "integer",
-                    "example": 5
-                }
-            }
-        },
         "TransactionHistoryResponse": {
             "type": "object",
             "properties": {
                 "pagination": {
-                    "$ref": "#/definitions/PaginationMeta"
+                    "$ref": "#/definitions/CursorPaginationMeta"
                 },
                 "transactions": {
                     "type": "array",
@@ -947,6 +942,10 @@ const docTemplate = `{
                 "status": {
                     "type": "string",
                     "example": "COMPLETED"
+                },
+                "transaction_purpose": {
+                    "type": "string",
+                    "example": "WITHDRAWAL"
                 },
                 "transaction_type": {
                     "type": "string",
@@ -1084,6 +1083,8 @@ var SwaggerInfo = &swag.Spec{
 	Description:      "A wallet service API for managing user wallets and transactions",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
+	LeftDelim:        "{{",
+	RightDelim:       "}}",
 }
 
 func init() {

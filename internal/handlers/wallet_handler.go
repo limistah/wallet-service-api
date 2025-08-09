@@ -409,18 +409,18 @@ func (h *WalletHandler) TransferFunds(c *gin.Context) {
 // GetTransactionHistory godoc
 //
 //	@Summary		Get transaction history
-//	@Description	Retrieve paginated transaction history for the authenticated user's wallet
+//	@Description	Retrieve cursor-paginated transaction history for the authenticated user's wallet
 //	@Tags			wallets
 //	@Accept			json
 //	@Produce		json
 //	@Security		BearerAuth
-//	@Param			page	query		int	false	"Page number"	default(1)
-//	@Param			limit	query		int	false	"Page size"		default(20)
-//	@Success		200		{object}	dto.APIResponse{data=dto.TransactionHistoryResponse}
-//	@Failure		400		{object}	dto.ErrorResponse
-//	@Failure		401		{object}	dto.ErrorResponse
-//	@Failure		404		{object}	dto.ErrorResponse
-//	@Failure		500		{object}	dto.ErrorResponse
+//	@Param			cursor		query		string	false	"Cursor for pagination"
+//	@Param			limit		query		int		false	"Page size"		default(20)
+//	@Success		200			{object}	dto.APIResponse{data=dto.TransactionHistoryResponse}
+//	@Failure		400			{object}	dto.ErrorResponse
+//	@Failure		401			{object}	dto.ErrorResponse
+//	@Failure		404			{object}	dto.ErrorResponse
+//	@Failure		500			{object}	dto.ErrorResponse
 //	@Router			/wallets/me/transactions [get]
 func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
 	wallet, err := h.getAuthenticatedUserWallet(c)
@@ -441,21 +441,33 @@ func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
 		return
 	}
 
-	page := 1
-	if p := c.Query("page"); p != "" {
-		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
-			page = parsed
+	// Parse query parameters
+	cursor := c.Query("cursor")
+	direction := c.DefaultQuery("direction", "next")
+
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
 		}
 	}
 
-	pageSize := 20
-	if ps := c.Query("limit"); ps != "" {
-		if parsed, err := strconv.Atoi(ps); err == nil && parsed > 0 && parsed <= 100 {
-			pageSize = parsed
-		}
+	var cursorPtr *string
+	if cursor != "" {
+		cursorPtr = &cursor
 	}
 
-	transactions, err := h.walletUseCase.GetTransactionHistory(wallet.ID, page, pageSize)
+	// Validate direction
+	if direction != "next" && direction != "prev" {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Success: false,
+			Message: "Invalid direction parameter. Use 'next' or 'prev'",
+			Error:   "invalid direction",
+		})
+		return
+	}
+
+	transactions, nextCursor, err := h.walletUseCase.GetTransactionHistory(wallet.ID, cursorPtr, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Success: false,
@@ -473,11 +485,10 @@ func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
 
 	response := dto.TransactionHistoryResponse{
 		Transactions: transactionResponses,
-		Pagination: dto.PaginationMeta{
-			Page:      page,
-			PageSize:  pageSize,
-			Total:     len(transactionResponses), // This should be total count from DB in real implementation
-			TotalPage: 1,                         // Calculate based on total count
+		Pagination: dto.CursorPaginationMeta{
+			PageSize:    limit,
+			NextCursor:  nextCursor,
+			HasNextPage: nextCursor != nil && *nextCursor != "",
 		},
 	}
 

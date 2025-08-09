@@ -58,6 +58,18 @@ definitions:
     - name
     - password
     type: object
+  CursorPaginationMeta:
+    properties:
+      has_next_page:
+        example: true
+        type: boolean
+      next_cursor:
+        example: eyJpZCI6MTAwLCJjcmVhdGVkX2F0IjoiMjAyMy0wMS0wMVQwMDowMDowMFoifQ==
+        type: string
+      page_size:
+        example: 20
+        type: integer
+    type: object
   ErrorResponse:
     properties:
       error:
@@ -105,25 +117,10 @@ definitions:
       user:
         $ref: '#/definitions/UserResponse'
     type: object
-  PaginationMeta:
-    properties:
-      page:
-        example: 1
-        type: integer
-      page_size:
-        example: 20
-        type: integer
-      total:
-        example: 100
-        type: integer
-      total_pages:
-        example: 5
-        type: integer
-    type: object
   TransactionHistoryResponse:
     properties:
       pagination:
-        $ref: '#/definitions/PaginationMeta'
+        $ref: '#/definitions/CursorPaginationMeta'
       transactions:
         items:
           $ref: '#/definitions/TransactionResponse'
@@ -154,6 +151,9 @@ definitions:
         type: string
       status:
         example: COMPLETED
+        type: string
+      transaction_purpose:
+        example: WITHDRAWAL
         type: string
       transaction_type:
         example: CREDIT
@@ -534,14 +534,13 @@ paths:
     get:
       consumes:
       - application/json
-      description: Retrieve paginated transaction history for the authenticated user's
-        wallet
+      description: Retrieve cursor-paginated transaction history for the authenticated
+        user's wallet
       parameters:
-      - default: 1
-        description: Page number
+      - description: Cursor for pagination
         in: query
-        name: page
-        type: integer
+        name: cursor
+        type: string
       - default: 20
         description: Page size
         in: query

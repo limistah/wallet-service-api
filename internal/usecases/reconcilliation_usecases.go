@@ -76,6 +76,7 @@ func (uc *reconciliationUseCase) performWalletReconciliation(walletID uint) (*mo
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("Calculated Balance:", calculatedBalance.String())
 
 	// Compare balances
 	storedBalance := wallet.Balance

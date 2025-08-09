@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"time"
+
 	"github.com/limistah/wallet-service/internal/models"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -33,6 +35,7 @@ type TransactionRepository interface {
 	GetByID(id uint) (*models.Transaction, error)
 	GetByReference(reference string) (*models.Transaction, error)
 	GetByWalletID(walletID uint, offset, limit int) ([]models.Transaction, error)
+	GetByWalletIDWithCursor(walletID uint, cursor *time.Time, cursorID *uint, limit int) ([]models.Transaction, error)
 	Update(transaction *models.Transaction) error
 	CalculateBalance(walletID uint) (decimal.Decimal, error)
 	List(offset, limit int) ([]models.Transaction, error)
@@ -66,11 +69,10 @@ type Repositories struct {
 // NewRepositories creates a new instance of all repositories
 func NewRepositories(db *gorm.DB) *Repositories {
 	return &Repositories{
-		User:            NewUserRepository(db),
-		Wallet:          NewWalletRepository(db),
-		Transaction:     NewTransactionRepository(db),
-		TransactionType: NewTransactionTypeRepository(db),
-		Reconciliation:  NewReconciliationRepository(db),
-		DB:              db,
+		User:           NewUserRepository(db),
+		Wallet:         NewWalletRepository(db),
+		Transaction:    NewTransactionRepository(db),
+		Reconciliation: NewReconciliationRepository(db),
+		DB:             db,
 	}
 }

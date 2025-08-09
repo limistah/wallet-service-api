@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"time"
+
 	"github.com/limistah/wallet-service/internal/models"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -21,7 +23,7 @@ func (r *transactionRepository) Create(transaction *models.Transaction) error {
 
 func (r *transactionRepository) GetByID(id uint) (*models.Transaction, error) {
 	var transaction models.Transaction
-	err := r.db.Preload("Wallet").Preload("TransactionType").First(&transaction, id).Error
+	err := r.db.Preload("Wallet").First(&transaction, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +32,7 @@ func (r *transactionRepository) GetByID(id uint) (*models.Transaction, error) {
 
 func (r *transactionRepository) GetByReference(reference string) (*models.Transaction, error) {
 	var transaction models.Transaction
-	err := r.db.Preload("Wallet").Preload("TransactionType").
+	err := r.db.Preload("Wallet").
 		Where("reference = ?", reference).First(&transaction).Error
 	if err != nil {
 		return nil, err
@@ -48,6 +50,20 @@ func (r *transactionRepository) GetByWalletID(walletID uint, offset, limit int) 
 	return transactions, err
 }
 
+func (r *transactionRepository) GetByWalletIDWithCursor(walletID uint, cursor *time.Time, cursorID *uint, limit int) ([]models.Transaction, error) {
+	var transactions []models.Transaction
+	query := r.db.Where("wallet_id = ?", walletID)
+
+	// Only add cursor conditions if cursor is provided
+	if cursor != nil && cursorID != nil {
+		query = query.Where("(created_at < ? OR (created_at = ? AND id < ?))", cursor, cursor, cursorID)
+	}
+
+	query = query.Order("created_at DESC, id DESC").Limit(limit + 1)
+	err := query.Find(&transactions).Error // Fetch one extra to check if there's a next page
+	return transactions, err
+}
+
 func (r *transactionRepository) Update(transaction *models.Transaction) error {
 	return r.db.Save(transaction).Error
 }
@@ -58,8 +74,7 @@ func (r *transactionRepository) CalculateBalance(walletID uint) (decimal.Decimal
 
 	// Calculate sum of credits (CREDIT transactions)
 	err := r.db.Table("transactions t").
-		Joins("JOIN transaction_types tt ON t.transaction_type_id = tt.id").
-		Where("t.wallet_id = ? AND t.status = ? AND tt.name = ?",
+		Where("t.wallet_id = ? AND t.status = ? AND t.transaction_type = ?",
 			walletID, models.TransactionStatusCompleted, models.TransactionTypeCredit).
 		Select("COALESCE(SUM(t.amount), 0)").
 		Scan(&creditSum).Error
@@ -70,8 +85,7 @@ func (r *transactionRepository) CalculateBalance(walletID uint) (decimal.Decimal
 
 	// Calculate sum of debits (DEBIT transactions)
 	err = r.db.Table("transactions t").
-		Joins("JOIN transaction_types tt ON t.transaction_type_id = tt.id").
-		Where("t.wallet_id = ? AND t.status = ? AND tt.name = ?",
+		Where("t.wallet_id = ? AND t.status = ? AND t.transaction_type = ?",
 			walletID, models.TransactionStatusCompleted, models.TransactionTypeDebit).
 		Select("COALESCE(SUM(t.amount), 0)").
 		Scan(&debitSum).Error
@@ -84,7 +98,7 @@ func (r *transactionRepository) CalculateBalance(walletID uint) (decimal.Decimal
 
 func (r *transactionRepository) List(offset, limit int) ([]models.Transaction, error) {
 	var transactions []models.Transaction
-	err := r.db.Preload("Wallet").Preload("TransactionType").
+	err := r.db.Preload("Wallet").
 		Order("created_at DESC").
 		Offset(offset).Limit(limit).
 		Find(&transactions).Error

@@ -16,10 +16,8 @@ import (
 
 // Initialize connects to database and runs migrations
 func Initialize() (*gorm.DB, error) {
-	// Load configuration
 	cfg := config.LoadConfig()
 
-	// Get database path from environment or use default for SQLite
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "app.db"
@@ -28,7 +26,6 @@ func Initialize() (*gorm.DB, error) {
 	var db *gorm.DB
 	var err error
 
-	// Configure GORM logger
 	gormLogger := logger.Default
 	if cfg.App.Environment == "production" {
 		gormLogger = logger.Default.LogMode(logger.Silent)
@@ -38,7 +35,6 @@ func Initialize() (*gorm.DB, error) {
 		Logger: gormLogger,
 	}
 
-	// Connect based on driver
 	switch cfg.Database.Driver {
 	case "mysql":
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -61,7 +57,6 @@ func Initialize() (*gorm.DB, error) {
 		return nil, fmt.Errorf("unsupported database driver: %s", cfg.Database.Driver)
 	}
 
-	// Configure connection pool for MySQL
 	if cfg.Database.Driver == "mysql" {
 		sqlDB, err := db.DB()
 		if err != nil {
@@ -72,7 +67,6 @@ func Initialize() (*gorm.DB, error) {
 		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
 		sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
 
-		// Test the connection
 		if err := sqlDB.Ping(); err != nil {
 			return nil, fmt.Errorf("failed to ping database: %v", err)
 		}
@@ -80,11 +74,9 @@ func Initialize() (*gorm.DB, error) {
 
 	log.Printf("Successfully connected to %s database", cfg.Database.Driver)
 
-	// Auto migrate models
 	err = db.AutoMigrate(
 		&models.User{},
 		&models.Wallet{},
-		&models.TransactionType{},
 		&models.Transaction{},
 		&models.ReconciliationReport{},
 	)
@@ -92,13 +84,6 @@ func Initialize() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 
-	// Seed transaction types
-	err = seedTransactionTypes(db)
-	if err != nil {
-		return nil, fmt.Errorf("failed to seed transaction types: %v", err)
-	}
-
-	// Bootstrap system account
 	err = bootstrapSystemAccount(db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to bootstrap system account: %v", err)
@@ -113,7 +98,6 @@ func InitWithConfig(cfg *config.Config) (*gorm.DB, error) {
 	var db *gorm.DB
 	var err error
 
-	// Configure GORM logger
 	gormLogger := logger.Default
 	if cfg.App.Environment == "production" {
 		gormLogger = logger.Default.LogMode(logger.Silent)
@@ -123,7 +107,6 @@ func InitWithConfig(cfg *config.Config) (*gorm.DB, error) {
 		Logger: gormLogger,
 	}
 
-	// Connect based on driver
 	switch cfg.Database.Driver {
 	case "mysql":
 		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -147,7 +130,9 @@ func InitWithConfig(cfg *config.Config) (*gorm.DB, error) {
 	// Auto migrate models
 	err = db.AutoMigrate(
 		&models.User{},
-		// Add other models here as we create them
+		&models.Wallet{},
+		&models.Transaction{},
+		&models.ReconciliationReport{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
@@ -156,35 +141,12 @@ func InitWithConfig(cfg *config.Config) (*gorm.DB, error) {
 	return db, nil
 }
 
-// seedTransactionTypes creates default transaction types
-func seedTransactionTypes(db *gorm.DB) error {
-	transactionTypes := []models.TransactionType{
-		{Name: models.TransactionTypeCredit, Description: "Money credited to wallet"},
-		{Name: models.TransactionTypeDebit, Description: "Money debited from wallet"},
-	}
-
-	for _, tt := range transactionTypes {
-		var existing models.TransactionType
-		if err := db.Where("name = ?", tt.Name).First(&existing).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				if err := db.Create(&tt).Error; err != nil {
-					return err
-				}
-			} else {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // bootstrapSystemAccount creates the system account and wallet for double-entry bookkeeping
 func bootstrapSystemAccount(db *gorm.DB) error {
 	// Check if system account already exists
 	var existingUser models.User
 	if err := db.Where("email = ? AND is_system = ?", models.SystemAccountEmail, true).First(&existingUser).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// Create system user
 			systemUser := models.CreateSystemUser()
 
 			if err := systemUser.HashPassword(systemUser.Password); err != nil {

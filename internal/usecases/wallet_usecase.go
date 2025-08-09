@@ -1,8 +1,11 @@
 package usecases
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/limistah/wallet-service/internal/models"
 	"github.com/limistah/wallet-service/internal/repositories"
@@ -13,6 +16,12 @@ import (
 type walletUseCase struct {
 	repos            *repositories.Repositories
 	reconciliationUC ReconciliationUseCase
+}
+
+// TransactionCursor represents a cursor for pagination
+type TransactionCursor struct {
+	ID        uint      `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // NewWalletUseCase creates a new wallet use case
@@ -31,7 +40,6 @@ func (uc *walletUseCase) performPreTransactionReconciliation(walletID uint) erro
 		return fmt.Errorf("reconciliation check failed: %w", err)
 	}
 
-	// If there's a mismatch, we need to handle it appropriately
 	if report.Status == models.ReconciliationStatusMismatch {
 		return fmt.Errorf("wallet balance mismatch detected: stored=%s, calculated=%s, difference=%s. Transaction cannot proceed until reconciliation is resolved",
 			report.StoredBalance.String(), report.CalculatedBalance.String(), report.Difference.String())
@@ -52,13 +60,11 @@ func (uc *walletUseCase) performPostTransactionReconciliation(walletID uint) {
 
 // getSystemWallet retrieves the system wallet for double-entry bookkeeping
 func (uc *walletUseCase) getSystemWallet() (*models.Wallet, error) {
-	// Find system user
 	systemUser, err := uc.repos.User.GetByEmail(models.SystemAccountEmail)
 	if err != nil {
 		return nil, fmt.Errorf("system user not found: %w", err)
 	}
 
-	// Find system wallet
 	systemWallet, err := uc.repos.Wallet.GetByUserID(systemUser.ID)
 	if err != nil {
 		return nil, fmt.Errorf("system wallet not found: %w", err)
@@ -68,13 +74,11 @@ func (uc *walletUseCase) getSystemWallet() (*models.Wallet, error) {
 }
 
 func (uc *walletUseCase) CreateWallet(userID uint, currency string) (*models.Wallet, error) {
-	// Check if user exists
 	_, err := uc.repos.User.GetByID(userID)
 	if err != nil {
 		return nil, errors.New("user not found")
 	}
 
-	// Check if user already has a wallet
 	existingWallet, err := uc.repos.Wallet.GetByUserID(userID)
 	if err == nil && existingWallet != nil {
 		return nil, errors.New("user already has a wallet")
@@ -104,17 +108,14 @@ func (uc *walletUseCase) GetWalletByUserID(userID uint) (*models.Wallet, error) 
 }
 
 func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, reference, description string) (*models.Transaction, *models.Transaction, error) {
-	// Validate amount
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return nil, nil, errors.New("amount must be greater than zero")
 	}
 
-	// // RECONCILIATION CHECK: Ensure wallet balance is accurate before funding
 	if err := uc.performPreTransactionReconciliation(walletID); err != nil {
 		return nil, nil, fmt.Errorf("pre-transaction reconciliation failed: %w", err)
 	}
 
-	// Check for duplicate reference
 	_, err := uc.repos.Transaction.GetByReference(reference)
 	if err == nil {
 		return nil, nil, errors.New("duplicate reference")
@@ -123,7 +124,6 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 		return nil, nil, fmt.Errorf("error checking reference: %w", err)
 	}
 
-	// Get user wallet
 	userWallet, err := uc.repos.Wallet.GetByID(walletID)
 	if err != nil {
 		return nil, nil, errors.New("wallet not found")
@@ -133,7 +133,6 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 		return nil, nil, errors.New("wallet is not active")
 	}
 
-	// Get system wallet
 	systemWallet, err := uc.getSystemWallet()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get system wallet: %w", err)
@@ -143,29 +142,16 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 		return nil, nil, errors.New("insufficient system funds")
 	}
 
-	// Get transaction types
-	creditType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeCredit)
-	if err != nil {
-		return nil, nil, errors.New("credit transaction type not found")
-	}
-
-	debitType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeDebit)
-	if err != nil {
-		return nil, nil, errors.New("debit transaction type not found")
-	}
-
 	var systemTransaction, userTransaction *models.Transaction
 
-	// Perform both transactions atomically
 	err = uc.repos.DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Debit system wallet
 		systemBalanceBefore := systemWallet.Balance
 		systemBalanceAfter := systemBalanceBefore.Sub(amount)
 
 		systemTransaction = &models.Transaction{
 			Reference:          reference + "_system_debit",
 			WalletID:           systemWallet.ID,
-			TransactionTypeID:  debitType.ID,
+			TransactionType:    models.TransactionTypeDebit,
 			Amount:             amount,
 			Metadata:           `{"source": "funding"}`,
 			BalanceBefore:      systemBalanceBefore,
@@ -179,7 +165,6 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 			return fmt.Errorf("failed to create system transaction: %w", err)
 		}
 
-		// Update system wallet balance with optimistic locking
 		result := tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", systemWallet.ID, systemWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": systemBalanceAfter,
@@ -194,14 +179,13 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 			return errors.New("system wallet version mismatch - concurrent modification detected")
 		}
 
-		// 2. Credit user wallet
 		userBalanceBefore := userWallet.Balance
 		userBalanceAfter := userBalanceBefore.Add(amount)
 
 		userTransaction = &models.Transaction{
 			Reference:            reference,
 			WalletID:             walletID,
-			TransactionTypeID:    creditType.ID,
+			TransactionType:      models.TransactionTypeCredit,
 			Amount:               amount,
 			Metadata:             `{"source": "funding"}`,
 			BalanceBefore:        userBalanceBefore,
@@ -216,7 +200,6 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 			return fmt.Errorf("failed to create user transaction: %w", err)
 		}
 
-		// Update user wallet balance with optimistic locking
 		result = tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", walletID, userWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": userBalanceAfter,
@@ -231,7 +214,6 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 			return errors.New("user wallet version mismatch - concurrent modification detected")
 		}
 
-		// Link the transactions (bidirectional)
 		return tx.Model(systemTransaction).Update("related_transaction_id", userTransaction.ID).Error
 	})
 
@@ -239,10 +221,8 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 		return nil, nil, err
 	}
 
-	// POST-TRANSACTION RECONCILIATION: Audit check after funding
 	go uc.performPostTransactionReconciliation(walletID)
 
-	// Load the transactions with related data
 	userTx, err := uc.repos.Transaction.GetByID(userTransaction.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load user transaction: %w", err)
@@ -257,17 +237,14 @@ func (uc *walletUseCase) FundWallet(walletID uint, amount decimal.Decimal, refer
 }
 
 func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, reference, description string) (*models.Transaction, *models.Transaction, error) {
-	// Validate amount
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return nil, nil, errors.New("amount must be greater than zero")
 	}
 
-	// RECONCILIATION CHECK: Ensure wallet balance is accurate before withdrawal
 	if err := uc.performPreTransactionReconciliation(walletID); err != nil {
 		return nil, nil, fmt.Errorf("pre-transaction reconciliation failed: %w", err)
 	}
 
-	// Check for duplicate reference
 	_, err := uc.repos.Transaction.GetByReference(reference)
 	if err == nil {
 		return nil, nil, errors.New("duplicate reference")
@@ -276,7 +253,6 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 		return nil, nil, fmt.Errorf("error checking reference: %w", err)
 	}
 
-	// Get user wallet (re-fetch after reconciliation to ensure latest balance)
 	userWallet, err := uc.repos.Wallet.GetByID(walletID)
 	if err != nil {
 		return nil, nil, errors.New("wallet not found")
@@ -291,32 +267,17 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 			userWallet.Balance.InexactFloat64(), amount.InexactFloat64())
 	}
 
-	// Get system wallet
 	systemWallet, err := uc.getSystemWallet()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get system wallet: %w", err)
 	}
 
-	// Get transaction types
-	debitType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeDebit)
-	if err != nil {
-		return nil, nil, errors.New("debit transaction type not found")
-	}
-
-	creditType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeCredit)
-	if err != nil {
-		return nil, nil, errors.New("credit transaction type not found")
-	}
-
 	var userTransaction, systemTransaction *models.Transaction
 
-	// Perform both transactions atomically
 	err = uc.repos.DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Debit user wallet
 		userBalanceBefore := userWallet.Balance
 		userBalanceAfter := userBalanceBefore.Sub(amount)
 
-		// Double-check sufficient funds within transaction
 		if userBalanceAfter.LessThan(decimal.Zero) {
 			return errors.New("insufficient funds for withdrawal")
 		}
@@ -324,7 +285,7 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 		userTransaction = &models.Transaction{
 			Reference:          reference,
 			WalletID:           walletID,
-			TransactionTypeID:  debitType.ID,
+			TransactionType:    models.TransactionTypeDebit,
 			Amount:             amount,
 			Metadata:           `{"source": "withdrawal"}`,
 			BalanceBefore:      userBalanceBefore,
@@ -338,7 +299,6 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 			return fmt.Errorf("failed to create user transaction: %w", err)
 		}
 
-		// Update user wallet balance with optimistic locking
 		result := tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", walletID, userWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": userBalanceAfter,
@@ -353,14 +313,13 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 			return errors.New("user wallet version mismatch - concurrent modification detected")
 		}
 
-		// 2. Credit system wallet
 		systemBalanceBefore := systemWallet.Balance
 		systemBalanceAfter := systemBalanceBefore.Add(amount)
 
 		systemTransaction = &models.Transaction{
 			Reference:            reference + "_system_credit",
 			WalletID:             systemWallet.ID,
-			TransactionTypeID:    creditType.ID,
+			TransactionType:      models.TransactionTypeCredit,
 			Amount:               amount,
 			Metadata:             `{"source": "withdrawal"}`,
 			BalanceBefore:        systemBalanceBefore,
@@ -375,7 +334,6 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 			return fmt.Errorf("failed to create system transaction: %w", err)
 		}
 
-		// Update system wallet balance with optimistic locking
 		result = tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", systemWallet.ID, systemWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": systemBalanceAfter,
@@ -390,7 +348,6 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 			return errors.New("system wallet version mismatch - concurrent modification detected")
 		}
 
-		// Link the transactions (bidirectional)
 		return tx.Model(userTransaction).Update("related_transaction_id", systemTransaction.ID).Error
 	})
 
@@ -398,10 +355,8 @@ func (uc *walletUseCase) WithdrawFunds(walletID uint, amount decimal.Decimal, re
 		return nil, nil, err
 	}
 
-	// POST-TRANSACTION RECONCILIATION: Audit check after withdrawal
 	go uc.performPostTransactionReconciliation(walletID)
 
-	// Load the transactions with related data
 	userTx, err := uc.repos.Transaction.GetByID(userTransaction.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load user transaction: %w", err)
@@ -420,11 +375,26 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 	if fromWalletID == toWalletID {
 		return nil, nil, errors.New("cannot transfer to the same wallet")
 	}
-	// Get wallet
-	_, err := uc.repos.Wallet.GetByID(toWalletID)
+	// Get both wallets
+	fromWallet, err := uc.repos.Wallet.GetByID(fromWalletID)
 	if err != nil {
-		return nil, nil, errors.New("receiving wallet not found")
+		return nil, nil, errors.New("source wallet not found")
 	}
+
+	toWallet, err := uc.repos.Wallet.GetByID(toWalletID)
+	if err != nil {
+		return nil, nil, errors.New("destination wallet not found")
+	}
+
+	if !fromWallet.CanDebit(amount) {
+		return nil, nil, fmt.Errorf("insufficient funds in source wallet: available=%.2f, requested=%.2f",
+			fromWallet.Balance.InexactFloat64(), amount.InexactFloat64())
+	}
+
+	if !toWallet.IsActive() {
+		return nil, nil, errors.New("destination wallet is not active")
+	}
+
 	// Validate amount
 	if amount.LessThanOrEqual(decimal.Zero) {
 		return nil, nil, errors.New("amount must be greater than zero")
@@ -446,42 +416,10 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 		return nil, nil, fmt.Errorf("error checking reference: %w", err)
 	}
 
-	// Get both wallets
-	fromWallet, err := uc.repos.Wallet.GetByID(fromWalletID)
-	if err != nil {
-		return nil, nil, errors.New("source wallet not found")
-	}
-
-	toWallet, err := uc.repos.Wallet.GetByID(toWalletID)
-	if err != nil {
-		return nil, nil, errors.New("destination wallet not found")
-	}
-
-	// Validate wallet states
-	if !fromWallet.CanDebit(amount) {
-		return nil, nil, fmt.Errorf("insufficient funds in source wallet: available=%.2f, requested=%.2f",
-			fromWallet.Balance.InexactFloat64(), amount.InexactFloat64())
-	}
-
-	if !toWallet.IsActive() {
-		return nil, nil, errors.New("destination wallet is not active")
-	}
-
-	// Prevent transfers to system account (unless explicitly allowed)
+	// Prevent transfers to system accounts (unless explicitly allowed)
 	systemWallet, _ := uc.getSystemWallet()
 	if systemWallet != nil && toWalletID == systemWallet.ID {
 		return nil, nil, errors.New("direct transfers to system account are not allowed")
-	}
-
-	// Get transaction types
-	transferOutType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeDebit)
-	if err != nil {
-		return nil, nil, errors.New("transfer out transaction type not found")
-	}
-
-	transferInType, err := uc.repos.TransactionType.GetByName(models.TransactionTypeCredit)
-	if err != nil {
-		return nil, nil, errors.New("transfer in transaction type not found")
 	}
 
 	fromBalanceBefore := fromWallet.Balance
@@ -494,14 +432,11 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 
 	var outTransaction, inTransaction *models.Transaction
 
-	// Perform both transactions atomically
 	err = uc.repos.DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Create outgoing transaction (debit from source)
 		outReference := fmt.Sprintf("%s-OUT", reference)
 		fromBalanceBefore := fromWallet.Balance
 		fromBalanceAfter := fromBalanceBefore.Sub(amount)
 
-		// Double-check sufficient funds within transaction
 		if fromBalanceAfter.LessThan(decimal.Zero) {
 			return errors.New("insufficient funds for transfer")
 		}
@@ -509,7 +444,7 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 		outTransaction = &models.Transaction{
 			Reference:          outReference,
 			WalletID:           fromWalletID,
-			TransactionTypeID:  transferOutType.ID,
+			TransactionType:    models.TransactionTypeDebit,
 			Amount:             amount,
 			Metadata:           `{"source": "transfer"}`,
 			BalanceBefore:      fromBalanceBefore,
@@ -519,13 +454,10 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 			Status:             models.TransactionStatusCompleted,
 		}
 
-		fmt.Println(outTransaction)
-
 		if err := tx.Create(outTransaction).Error; err != nil {
 			return fmt.Errorf("failed to create outgoing transaction: %w", err)
 		}
 
-		// 2. Create incoming transaction (credit to destination)
 		inReference := fmt.Sprintf("%s-IN", reference)
 		toBalanceBefore := toWallet.Balance
 		toBalanceAfter := toBalanceBefore.Add(amount)
@@ -533,7 +465,7 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 		inTransaction = &models.Transaction{
 			Reference:            inReference,
 			WalletID:             toWalletID,
-			TransactionTypeID:    transferInType.ID,
+			TransactionType:      models.TransactionTypeCredit,
 			TransactionPurpose:   "TRANSFER",
 			Amount:               amount,
 			BalanceBefore:        toBalanceBefore,
@@ -548,7 +480,6 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 			return fmt.Errorf("failed to create incoming transaction: %w", err)
 		}
 
-		// 3. Update source wallet balance with optimistic locking
 		result := tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", fromWalletID, fromWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": fromBalanceAfter,
@@ -563,7 +494,6 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 			return errors.New("source wallet version mismatch - concurrent modification detected")
 		}
 
-		// 4. Update destination wallet balance with optimistic locking
 		result = tx.Model(&models.Wallet{}).Where("id = ? AND version = ?", toWalletID, toWallet.Version).
 			Updates(map[string]interface{}{
 				"balance": toBalanceAfter,
@@ -578,7 +508,6 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 			return errors.New("destination wallet version mismatch - concurrent modification detected")
 		}
 
-		// 5. Link the transactions (bidirectional)
 		if err := tx.Model(outTransaction).Update("related_transaction_id", inTransaction.ID).Error; err != nil {
 			return fmt.Errorf("failed to link outgoing transaction: %w", err)
 		}
@@ -596,7 +525,6 @@ func (uc *walletUseCase) TransferFunds(fromWalletID, toWalletID uint, amount dec
 		uc.performPostTransactionReconciliation(toWalletID)
 	}()
 
-	// Load the transactions with related data
 	outTx, err := uc.repos.Transaction.GetByID(outTransaction.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load outgoing transaction: %w", err)
@@ -618,12 +546,70 @@ func (uc *walletUseCase) GetWalletBalance(walletID uint) (decimal.Decimal, error
 	return wallet.Balance, nil
 }
 
-func (uc *walletUseCase) GetTransactionHistory(walletID uint, page, pageSize int) ([]models.Transaction, error) {
+func (uc *walletUseCase) GetTransactionHistory(walletID uint, cursor *string, limit int) ([]models.Transaction, *string, error) {
 	_, err := uc.repos.Wallet.GetByID(walletID)
 	if err != nil {
-		return nil, errors.New("wallet not found")
+		return nil, nil, errors.New("wallet not found")
 	}
 
-	offset := (page - 1) * pageSize
-	return uc.repos.Transaction.GetByWalletID(walletID, offset, pageSize)
+	var cursorTime *time.Time
+	var cursorID *uint
+
+	if cursor != nil && *cursor != "" {
+		decodedCursor, err := uc.decodeCursor(*cursor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid cursor: %w", err)
+		}
+		cursorTime = &decodedCursor.CreatedAt
+		cursorID = &decodedCursor.ID
+	}
+	transactions, err := uc.repos.Transaction.GetByWalletIDWithCursor(walletID, cursorTime, cursorID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	hasMore := len(transactions) > limit
+	if hasMore {
+		transactions = transactions[:limit] // Remove the extra transaction
+	}
+
+	var nextCursor *string
+
+	if len(transactions) > 0 {
+		if hasMore {
+			lastTx := transactions[len(transactions)-1]
+			nextCursorData := TransactionCursor{
+				ID:        lastTx.ID,
+				CreatedAt: lastTx.CreatedAt,
+			}
+			nextCursor, _ = uc.encodeCursor(nextCursorData)
+		}
+	}
+	return transactions, nextCursor, nil
+}
+
+// encodeCursor encodes a cursor to a base64 string
+func (uc *walletUseCase) encodeCursor(cursor TransactionCursor) (*string, error) {
+	cursorJSON, err := json.Marshal(cursor)
+	if err != nil {
+		return nil, err
+	}
+	encodedCursor := base64.StdEncoding.EncodeToString(cursorJSON)
+	return &encodedCursor, nil
+}
+
+// decodeCursor decodes a base64 cursor string
+func (uc *walletUseCase) decodeCursor(cursor string) (*TransactionCursor, error) {
+	decodedBytes, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, err
+	}
+
+	var transactionCursor TransactionCursor
+	err = json.Unmarshal(decodedBytes, &transactionCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	return &transactionCursor, nil
 }

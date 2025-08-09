@@ -83,22 +83,23 @@ type TransferRequest struct {
 
 // TransactionResponse represents transaction response data
 type TransactionResponse struct {
-	ID              uint            `json:"id" example:"1"`
-	CreatedAt       time.Time       `json:"created_at" example:"2023-01-01T00:00:00Z"`
-	Reference       string          `json:"reference" example:"REF123456"`
-	WalletID        uint            `json:"wallet_id" example:"1"`
-	TransactionType string          `json:"transaction_type" example:"CREDIT"`
-	Amount          decimal.Decimal `json:"amount" example:"100.50"`
-	BalanceBefore   decimal.Decimal `json:"balance_before" example:"900.00"`
-	BalanceAfter    decimal.Decimal `json:"balance_after" example:"1000.50"`
-	Description     string          `json:"description" example:"Deposit from bank"`
-	Status          string          `json:"status" example:"COMPLETED"`
+	ID                 uint            `json:"id" example:"1"`
+	CreatedAt          time.Time       `json:"created_at" example:"2023-01-01T00:00:00Z"`
+	Reference          string          `json:"reference" example:"REF123456"`
+	WalletID           uint            `json:"wallet_id" example:"1"`
+	TransactionType    string          `json:"transaction_type" example:"CREDIT"`
+	TransactionPurpose string          `json:"transaction_purpose" example:"WITHDRAWAL"`
+	Amount             decimal.Decimal `json:"amount" example:"100.50"`
+	BalanceBefore      decimal.Decimal `json:"balance_before" example:"900.00"`
+	BalanceAfter       decimal.Decimal `json:"balance_after" example:"1000.50"`
+	Description        string          `json:"description" example:"Deposit from bank"`
+	Status             string          `json:"status" example:"COMPLETED"`
 } //@name TransactionResponse
 
-// TransactionHistoryResponse represents paginated transaction history
+// TransactionHistoryResponse represents cursor-paginated transaction history
 type TransactionHistoryResponse struct {
 	Transactions []TransactionResponse `json:"transactions"`
-	Pagination   PaginationMeta        `json:"pagination"`
+	Pagination   CursorPaginationMeta  `json:"pagination"`
 } //@name TransactionHistoryResponse
 
 // ReconciliationReportResponse represents reconciliation report data
@@ -120,6 +121,13 @@ type PaginationMeta struct {
 	Total     int `json:"total" example:"100"`
 	TotalPage int `json:"total_pages" example:"5"`
 } //@name PaginationMeta
+
+// CursorPaginationMeta represents cursor-based pagination metadata
+type CursorPaginationMeta struct {
+	PageSize    int     `json:"page_size" example:"20"`
+	NextCursor  *string `json:"next_cursor,omitempty" example:"eyJpZCI6MTAwLCJjcmVhdGVkX2F0IjoiMjAyMy0wMS0wMVQwMDowMDowMFoifQ=="`
+	HasNextPage bool    `json:"has_next_page" example:"true"`
+} //@name CursorPaginationMeta
 
 // APIResponse represents a standard API response
 type APIResponse struct {
@@ -168,16 +176,17 @@ func ToWalletResponse(wallet *models.Wallet) WalletResponse {
 
 func ToTransactionResponse(transaction *models.Transaction) TransactionResponse {
 	return TransactionResponse{
-		ID:              transaction.ID,
-		CreatedAt:       transaction.CreatedAt,
-		Reference:       transaction.Reference,
-		WalletID:        transaction.WalletID,
-		TransactionType: transaction.TransactionType.Name,
-		Amount:          transaction.Amount,
-		BalanceBefore:   transaction.BalanceBefore,
-		BalanceAfter:    transaction.BalanceAfter,
-		Description:     transaction.Description,
-		Status:          string(transaction.Status),
+		ID:                 transaction.ID,
+		CreatedAt:          transaction.CreatedAt,
+		Reference:          transaction.Reference,
+		WalletID:           transaction.WalletID,
+		TransactionType:    string(transaction.TransactionType),
+		TransactionPurpose: string(transaction.TransactionPurpose),
+		Amount:             transaction.Amount,
+		BalanceBefore:      transaction.BalanceBefore,
+		BalanceAfter:       transaction.BalanceAfter,
+		Description:        transaction.Description,
+		Status:             string(transaction.Status),
 	}
 }
 

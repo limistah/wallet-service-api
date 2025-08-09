@@ -12,7 +12,6 @@ import (
 
 // ValidateEmail validates email format using regex
 func ValidateEmail(email string) bool {
-	// Check length first (RFC 5321 limits email to 320 characters total)
 	if len(email) > 320 {
 		return false
 	}
@@ -23,7 +22,6 @@ func ValidateEmail(email string) bool {
 
 // ValidatePassword validates password strength
 func ValidatePassword(password string) bool {
-	// Minimum 6 characters, not empty, not only spaces
 	if len(strings.TrimSpace(password)) < 6 {
 		return false
 	}
@@ -115,7 +113,6 @@ func generateRandomString(length int) string {
 
 // Helper function to format amount with commas
 func formatAmountWithCommas(amount float64) string {
-	// Convert to string with 2 decimal places
 	amountStr := fmt.Sprintf("%.2f", amount)
 
 	// Split into integer and decimal parts

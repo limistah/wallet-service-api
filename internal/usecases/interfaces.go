@@ -26,7 +26,7 @@ type WalletUseCase interface {
 	WithdrawFunds(walletID uint, amount decimal.Decimal, reference, description string) (*models.Transaction, *models.Transaction, error)
 	TransferFunds(fromWalletID, toWalletID uint, amount decimal.Decimal, reference, description string) (*models.Transaction, *models.Transaction, error)
 	GetWalletBalance(walletID uint) (decimal.Decimal, error)
-	GetTransactionHistory(walletID uint, page, pageSize int) ([]models.Transaction, error)
+	GetTransactionHistory(walletID uint, cursor *string, limit int) ([]models.Transaction, *string, error)
 }
 
 // ReconciliationUseCase defines the interface for reconciliation business logic
