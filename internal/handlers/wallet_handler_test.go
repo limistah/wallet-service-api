@@ -57,19 +57,9 @@ func (m *MockWalletUseCase) GetWalletBalance(walletID uint) (decimal.Decimal, er
 	return args.Get(0).(decimal.Decimal), args.Error(1)
 }
 
-func (m *MockWalletUseCase) GetTransactionHistory(walletID uint, page, pageSize int) ([]models.Transaction, error) {
-	args := m.Called(walletID, page, pageSize)
-	return args.Get(0).([]models.Transaction), args.Error(1)
-}
-
-func (m *MockWalletUseCase) GetTransactionHistoryWithCursor(walletID uint, cursor *string, limit int, direction string) ([]models.Transaction, *string, *string, bool, bool, error) {
-	args := m.Called(walletID, cursor, limit, direction)
-	return args.Get(0).([]models.Transaction),
-		args.Get(1).(*string),
-		args.Get(2).(*string),
-		args.Get(3).(bool),
-		args.Get(4).(bool),
-		args.Error(5)
+func (m *MockWalletUseCase) GetTransactionHistory(walletID uint, cursor *string, limit int) ([]models.Transaction, *string, error) {
+	args := m.Called(walletID, cursor, limit)
+	return args.Get(0).([]models.Transaction), args.Get(1).(*string), args.Error(2)
 }
 
 func createTestCursor(id uint, createdAt time.Time) string {
@@ -96,7 +86,6 @@ func TestWalletHandler_GetTransactionHistoryWithCursor(t *testing.T) {
 		setupMock      func(*MockWalletUseCase)
 		expectedStatus int
 		expectedNext   bool
-		expectedPrev   bool
 	}{
 		{
 			name:        "successful cursor pagination - first page",
@@ -106,17 +95,16 @@ func TestWalletHandler_GetTransactionHistoryWithCursor(t *testing.T) {
 				mockUC.On("GetWalletByUserID", uint(1)).Return(wallet, nil)
 
 				transactions := []models.Transaction{
-					{ID: 3, CreatedAt: time.Now(), TransactionType: models.TransactionType{Name: "CREDIT"}},
-					{ID: 2, CreatedAt: time.Now().Add(-time.Hour), TransactionType: models.TransactionType{Name: "DEBIT"}},
+					{ID: 3, CreatedAt: time.Now(), TransactionType: models.TransactionTypeCredit},
+					{ID: 2, CreatedAt: time.Now().Add(-time.Hour), TransactionType: models.TransactionTypeDebit},
 				}
 
 				nextCursor := createTestCursor(2, time.Now().Add(-time.Hour))
-				mockUC.On("GetTransactionHistoryWithCursor", uint(1), (*string)(nil), 2, "next").
-					Return(transactions, &nextCursor, (*string)(nil), true, false, nil)
+				mockUC.On("GetTransactionHistory", uint(1), (*string)(nil), 2).
+					Return(transactions, &nextCursor, nil)
 			},
 			expectedStatus: http.StatusOK,
 			expectedNext:   true,
-			expectedPrev:   false,
 		},
 		{
 			name:        "successful cursor pagination - with cursor",
@@ -126,18 +114,17 @@ func TestWalletHandler_GetTransactionHistoryWithCursor(t *testing.T) {
 				mockUC.On("GetWalletByUserID", uint(1)).Return(wallet, nil)
 
 				transactions := []models.Transaction{
-					{ID: 1, CreatedAt: time.Now().Add(-2 * time.Hour), TransactionType: models.TransactionType{Name: "CREDIT"}},
+					{ID: 1, CreatedAt: time.Now().Add(-2 * time.Hour), TransactionType: models.TransactionTypeCredit},
 				}
 
-				prevCursor := createTestCursor(1, time.Now().Add(-2*time.Hour))
-				mockUC.On("GetTransactionHistoryWithCursor", uint(1), mock.MatchedBy(func(cursor *string) bool {
+				// No next cursor means last page
+				mockUC.On("GetTransactionHistory", uint(1), mock.MatchedBy(func(cursor *string) bool {
 					return cursor != nil && *cursor != ""
-				}), 2, "next").
-					Return(transactions, (*string)(nil), &prevCursor, false, true, nil)
+				}), 2).
+					Return(transactions, (*string)(nil), nil)
 			},
 			expectedStatus: http.StatusOK,
 			expectedNext:   false,
-			expectedPrev:   true,
 		},
 		{
 			name:        "invalid direction parameter",
@@ -185,7 +172,6 @@ func TestWalletHandler_GetTransactionHistoryWithCursor(t *testing.T) {
 				assert.True(t, ok)
 
 				assert.Equal(t, tt.expectedNext, pagination["has_next_page"])
-				assert.Equal(t, tt.expectedPrev, pagination["has_prev_page"])
 			}
 
 			mockUC.AssertExpectations(t)

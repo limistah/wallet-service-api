@@ -3,6 +3,7 @@ package usecases
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/limistah/wallet-service/internal/models"
 	"github.com/limistah/wallet-service/internal/repositories"
@@ -182,6 +183,41 @@ func (m *MockTransactionRepository) GetByWalletID(walletID uint, offset, limit i
 	return transactions, nil
 }
 
+func (m *MockTransactionRepository) GetByWalletIDWithCursor(walletID uint, cursor *time.Time, cursorID *uint, limit int) ([]models.Transaction, error) {
+	transactions := make([]models.Transaction, 0)
+	for _, transaction := range m.transactions {
+		if transaction.WalletID == walletID {
+			// If cursor is provided, filter based on cursor
+			if cursor != nil && cursorID != nil {
+				if transaction.CreatedAt.Before(*cursor) ||
+					(transaction.CreatedAt.Equal(*cursor) && transaction.ID < *cursorID) {
+					transactions = append(transactions, *transaction)
+				}
+			} else {
+				// No cursor, include all transactions
+				transactions = append(transactions, *transaction)
+			}
+		}
+	}
+
+	// Sort by created_at DESC, id DESC (simulating ORDER BY)
+	for i := 0; i < len(transactions)-1; i++ {
+		for j := i + 1; j < len(transactions); j++ {
+			if transactions[i].CreatedAt.Before(transactions[j].CreatedAt) ||
+				(transactions[i].CreatedAt.Equal(transactions[j].CreatedAt) && transactions[i].ID < transactions[j].ID) {
+				transactions[i], transactions[j] = transactions[j], transactions[i]
+			}
+		}
+	}
+
+	// Apply limit (add 1 to check if there's a next page)
+	if len(transactions) > limit {
+		transactions = transactions[:limit+1]
+	}
+
+	return transactions, nil
+}
+
 func (m *MockTransactionRepository) Update(transaction *models.Transaction) error {
 	m.transactions[transaction.ID] = transaction
 	return nil
@@ -206,23 +242,18 @@ func (m *MockTransactionRepository) List(offset, limit int) ([]models.Transactio
 }
 
 // MockTransactionTypeRepository implements TransactionTypeRepository interface for testing
+// Note: TransactionType is now a simple string, but we maintain the interface for compatibility
 type MockTransactionTypeRepository struct {
-	types map[string]*models.TransactionType
+	types map[string]string
 }
 
 func NewMockTransactionTypeRepository() *MockTransactionTypeRepository {
 	repo := &MockTransactionTypeRepository{
-		types: make(map[string]*models.TransactionType),
+		types: make(map[string]string),
 	}
 	// Pre-populate with default types
-	repo.types[models.TransactionTypeCredit] = &models.TransactionType{
-		ID:   1,
-		Name: models.TransactionTypeCredit,
-	}
-	repo.types[models.TransactionTypeDebit] = &models.TransactionType{
-		ID:   2,
-		Name: models.TransactionTypeDebit,
-	}
+	repo.types[string(models.TransactionTypeCredit)] = string(models.TransactionTypeCredit)
+	repo.types[string(models.TransactionTypeDebit)] = string(models.TransactionTypeDebit)
 	return repo
 }
 
@@ -307,25 +338,17 @@ func (m *MockReconciliationUseCase) GetMismatchReports(page, pageSize int) ([]mo
 }
 
 func (m *MockTransactionTypeRepository) GetByName(name string) (*models.TransactionType, error) {
-	if transactionType, ok := m.types[name]; ok {
-		return transactionType, nil
-	}
+	// Since TransactionType is now a simple string, return a dummy struct for compatibility
 	return nil, gorm.ErrRecordNotFound
 }
 
 func (m *MockTransactionTypeRepository) List() ([]models.TransactionType, error) {
-	types := make([]models.TransactionType, 0, len(m.types))
-	for _, transactionType := range m.types {
-		types = append(types, *transactionType)
-	}
-	return types, nil
+	// Return empty list since TransactionType is now a simple string
+	return []models.TransactionType{}, nil
 }
 
 func (m *MockTransactionTypeRepository) Create(transactionType *models.TransactionType) error {
-	if transactionType.ID == 0 {
-		transactionType.ID = uint(len(m.types) + 1)
-	}
-	m.types[transactionType.Name] = transactionType
+	// No-op since TransactionType is now a simple string
 	return nil
 }
 
@@ -667,8 +690,8 @@ func TestWalletUseCase_TransferFunds(t *testing.T) {
 		if err == nil {
 			t.Error("Expected error for nonexistent destination")
 		}
-		if err.Error() != "receiving wallet not found" {
-			t.Errorf("Expected 'receiving wallet not found', got: %v", err)
+		if err.Error() != "destination wallet not found" {
+			t.Errorf("Expected 'destination wallet not found', got: %v", err)
 		}
 	})
 
@@ -873,6 +896,145 @@ func TestWalletUseCase_BusinessLogic(t *testing.T) {
 		_, err := walletUC.GetWallet(999)
 		if err == nil {
 			t.Error("Expected error for nonexistent wallet")
+		}
+	})
+}
+
+func TestWalletUseCase_GetTransactionHistory(t *testing.T) {
+	repos, mockReconciliationUC := setupTestEnvironment()
+	walletUC := NewWalletUseCase(repos, mockReconciliationUC)
+
+	// Create a user and wallet
+	user := &models.User{
+		ID:    100,
+		Email: "test@example.com",
+		Name:  "Test User",
+	}
+	repos.User.Create(user)
+
+	wallet := &models.Wallet{
+		ID:       100,
+		UserID:   100,
+		Balance:  decimal.NewFromFloat(1000),
+		Currency: "USD",
+		Status:   models.WalletStatusActive,
+		Version:  1,
+	}
+	repos.Wallet.Create(wallet)
+
+	// Create some test transactions
+	baseTime := time.Now()
+	tx1 := &models.Transaction{
+		CreatedAt:          baseTime.Add(-3 * time.Hour),
+		Reference:          "ref-101",
+		WalletID:           100,
+		TransactionType:    models.TransactionTypeCredit,
+		Amount:             decimal.NewFromFloat(100),
+		BalanceBefore:      decimal.NewFromFloat(0),
+		BalanceAfter:       decimal.NewFromFloat(100),
+		TransactionPurpose: models.TransactionPurposeWalletTopUp,
+		Description:        "Test transaction 1",
+		Status:             models.TransactionStatusCompleted,
+	}
+
+	tx2 := &models.Transaction{
+		CreatedAt:          baseTime.Add(-2 * time.Hour),
+		Reference:          "ref-102",
+		WalletID:           100,
+		TransactionType:    models.TransactionTypeCredit,
+		Amount:             decimal.NewFromFloat(200),
+		BalanceBefore:      decimal.NewFromFloat(100),
+		BalanceAfter:       decimal.NewFromFloat(300),
+		TransactionPurpose: models.TransactionPurposeWalletTopUp,
+		Description:        "Test transaction 2",
+		Status:             models.TransactionStatusCompleted,
+	}
+
+	tx3 := &models.Transaction{
+		CreatedAt:          baseTime.Add(-1 * time.Hour),
+		Reference:          "ref-103",
+		WalletID:           100,
+		TransactionType:    models.TransactionTypeDebit,
+		Amount:             decimal.NewFromFloat(50),
+		BalanceBefore:      decimal.NewFromFloat(300),
+		BalanceAfter:       decimal.NewFromFloat(250),
+		TransactionPurpose: models.TransactionPurposeWithdrawal,
+		Description:        "Test transaction 3",
+		Status:             models.TransactionStatusCompleted,
+	}
+
+	repos.Transaction.Create(tx1) // Will get ID 1
+	repos.Transaction.Create(tx2) // Will get ID 2
+	repos.Transaction.Create(tx3) // Will get ID 3
+
+	t.Run("should get transaction history without cursor (first page)", func(t *testing.T) {
+		transactions, nextCursor, err := walletUC.GetTransactionHistory(100, nil, 2)
+
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if len(transactions) != 2 {
+			t.Errorf("Expected 2 transactions, got: %d", len(transactions))
+		}
+
+		// Should return most recent transactions first (tx3, tx2) - IDs 3, 2
+		if len(transactions) >= 2 {
+			if transactions[0].ID != 3 {
+				t.Errorf("Expected first transaction ID 3, got: %d", transactions[0].ID)
+			}
+			if transactions[1].ID != 2 {
+				t.Errorf("Expected second transaction ID 2, got: %d", transactions[1].ID)
+			}
+		}
+
+		// Should have next cursor
+		if nextCursor == nil {
+			t.Error("Expected next cursor to be set")
+		}
+	})
+
+	t.Run("should get transaction history with cursor (next page)", func(t *testing.T) {
+		// First get the first page to get a cursor
+		_, cursor, err := walletUC.GetTransactionHistory(100, nil, 1)
+		if err != nil {
+			t.Errorf("Expected no error getting first page, got: %v", err)
+		}
+
+		if cursor == nil {
+			t.Fatal("Expected cursor to be set for pagination test")
+		}
+
+		// Use the cursor to get the next page
+		transactions, nextCursor, err := walletUC.GetTransactionHistory(100, cursor, 2)
+
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		// Should return remaining transactions
+		if len(transactions) == 0 {
+			t.Error("Expected at least one transaction in next page")
+		}
+
+		// Next cursor should be nil if no more pages
+		if len(transactions) < 2 && nextCursor != nil {
+			t.Error("Expected next cursor to be nil when no more pages")
+		}
+	})
+
+	t.Run("should handle nonexistent wallet", func(t *testing.T) {
+		_, _, err := walletUC.GetTransactionHistory(999, nil, 10)
+		if err == nil {
+			t.Error("Expected error for nonexistent wallet")
+		}
+	})
+
+	t.Run("should handle invalid cursor", func(t *testing.T) {
+		invalidCursor := "invalid-cursor"
+		_, _, err := walletUC.GetTransactionHistory(100, &invalidCursor, 10)
+		if err == nil {
+			t.Error("Expected error for invalid cursor")
 		}
 	})
 }

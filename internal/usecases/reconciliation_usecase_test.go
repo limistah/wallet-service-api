@@ -1,6 +1,7 @@
 package usecases
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/limistah/wallet-service/internal/models"
@@ -579,6 +580,815 @@ func TestReconciliationUseCase_EdgeCases(t *testing.T) {
 			}
 			if report.Status != models.ReconciliationStatusMatch {
 				t.Errorf("Expected status MATCH, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle wallet with failed transactions", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    31,
+			Email: "failed@example.com",
+			Name:  "Failed Transactions User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       31,
+			UserID:   user.ID,
+			Balance:  decimal.NewFromFloat(150.00),
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Create failed transaction (should not be included in calculation)
+		failedTx := &models.Transaction{
+			WalletID: 31,
+			Amount:   decimal.NewFromFloat(100.00),
+			Status:   models.TransactionStatusFailed,
+		}
+		transactionRepo.Create(failedTx)
+
+		// Create successful transaction
+		successTx := &models.Transaction{
+			WalletID: 31,
+			Amount:   decimal.NewFromFloat(150.00),
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(successTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(31)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if report != nil {
+			// Should only count completed transactions, ignoring failed ones
+			if !report.CalculatedBalance.Equal(decimal.NewFromFloat(150.00)) {
+				t.Errorf("Expected calculated balance 150.00 (only completed tx), got: %v", report.CalculatedBalance)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle mixed debit and credit transactions", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    32,
+			Email: "mixed@example.com",
+			Name:  "Mixed Transactions User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       32,
+			UserID:   user.ID,
+			Balance:  decimal.NewFromFloat(50.00), // Final expected balance
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Create credit transaction (+200)
+		creditTx := &models.Transaction{
+			WalletID:        32,
+			Amount:          decimal.NewFromFloat(200.00),
+			TransactionType: models.TransactionTypeCredit,
+			Status:          models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(creditTx)
+
+		// Create debit transaction (-150)
+		debitTx := &models.Transaction{
+			WalletID:        32,
+			Amount:          decimal.NewFromFloat(-150.00),
+			TransactionType: models.TransactionTypeDebit,
+			Status:          models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(debitTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(32)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if report != nil {
+			// Net balance should be 200 - 150 = 50
+			expectedBalance := decimal.NewFromFloat(50.00)
+			if !report.CalculatedBalance.Equal(expectedBalance) {
+				t.Errorf("Expected calculated balance %v, got: %v", expectedBalance, report.CalculatedBalance)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle suspended wallet", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+
+		user := &models.User{
+			ID:    33,
+			Email: "suspended@example.com",
+			Name:  "Suspended User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       33,
+			UserID:   user.ID,
+			Balance:  decimal.NewFromFloat(100.00),
+			Currency: "USD",
+			Status:   models.WalletStatusSuspended, // Suspended wallet
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Should still perform reconciliation even for suspended wallets
+		report, err := reconciliationUC.PerformWalletReconciliation(33)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if report == nil {
+			t.Error("Expected reconciliation report even for suspended wallet")
+		}
+	})
+
+	t.Run("should handle zero balances", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+
+		user := &models.User{
+			ID:    34,
+			Email: "zero@example.com",
+			Name:  "Zero Balance User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       34,
+			UserID:   user.ID,
+			Balance:  decimal.Zero, // Zero balance
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(34)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if report != nil {
+			if !report.StoredBalance.IsZero() {
+				t.Errorf("Expected stored balance 0, got: %v", report.StoredBalance)
+			}
+			if !report.CalculatedBalance.IsZero() {
+				t.Errorf("Expected calculated balance 0, got: %v", report.CalculatedBalance)
+			}
+			if !report.Difference.IsZero() {
+				t.Errorf("Expected difference 0, got: %v", report.Difference)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH for zero balances, got: %v", report.Status)
+			}
+		}
+	})
+}
+
+// Test system account reconciliation scenarios
+func TestReconciliationUseCase_SystemAccountScenarios(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should reconcile system account", func(t *testing.T) {
+		// System wallet should be ID 1 from setup
+		report, err := reconciliationUC.PerformWalletReconciliation(1)
+		if err != nil {
+			t.Errorf("Expected no error reconciling system account, got: %v", err)
+		}
+
+		if report == nil {
+			t.Error("Expected reconciliation report for system account")
+		}
+
+		if report != nil {
+			if report.WalletID != 1 {
+				t.Errorf("Expected system wallet ID 1, got: %d", report.WalletID)
+			}
+			// System account should have large initial balance
+			if report.StoredBalance.LessThan(decimal.NewFromFloat(1000000.00)) {
+				t.Errorf("Expected system account to have large balance, got: %v", report.StoredBalance)
+			}
+		}
+	})
+}
+
+// Test boundary conditions and edge cases
+func TestReconciliationUseCase_BoundaryConditions(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should handle large decimal values", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    35,
+			Email: "large@example.com",
+			Name:  "Large Values User",
+		}
+		userRepo.Create(user)
+
+		// Large balance
+		largeBalance := decimal.NewFromFloat(999999999.99)
+		wallet := &models.Wallet{
+			ID:       35,
+			UserID:   user.ID,
+			Balance:  largeBalance,
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Matching large transaction
+		largeTx := &models.Transaction{
+			WalletID: 35,
+			Amount:   largeBalance,
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(largeTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(35)
+		if err != nil {
+			t.Errorf("Expected no error with large values, got: %v", err)
+		}
+
+		if report != nil {
+			if !report.StoredBalance.Equal(largeBalance) {
+				t.Errorf("Expected stored balance %v, got: %v", largeBalance, report.StoredBalance)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH for large values, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle very small decimal differences", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    36,
+			Email: "small@example.com",
+			Name:  "Small Difference User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       36,
+			UserID:   user.ID,
+			Balance:  decimal.NewFromFloat(100.00),
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Transaction with tiny difference (100.01 vs 100.00)
+		smallDiffTx := &models.Transaction{
+			WalletID: 36,
+			Amount:   decimal.NewFromFloat(100.01),
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(smallDiffTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(36)
+		if err != nil {
+			t.Errorf("Expected no error with small differences, got: %v", err)
+		}
+
+		if report != nil {
+			expectedDiff := decimal.NewFromFloat(-0.01)
+			if !report.Difference.Equal(expectedDiff) {
+				t.Errorf("Expected difference %v, got: %v", expectedDiff, report.Difference)
+			}
+			if report.Status != models.ReconciliationStatusMismatch {
+				t.Errorf("Expected status MISMATCH for small difference, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle negative balances", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    37,
+			Email: "negative@example.com",
+			Name:  "Negative Balance User",
+		}
+		userRepo.Create(user)
+
+		// Negative stored balance
+		negativeBalance := decimal.NewFromFloat(-50.00)
+		wallet := &models.Wallet{
+			ID:       37,
+			UserID:   user.ID,
+			Balance:  negativeBalance,
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Matching negative transaction
+		negativeTx := &models.Transaction{
+			WalletID: 37,
+			Amount:   negativeBalance,
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(negativeTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(37)
+		if err != nil {
+			t.Errorf("Expected no error with negative balances, got: %v", err)
+		}
+
+		if report != nil {
+			if !report.StoredBalance.Equal(negativeBalance) {
+				t.Errorf("Expected stored balance %v, got: %v", negativeBalance, report.StoredBalance)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH for negative balances, got: %v", report.Status)
+			}
+		}
+	})
+}
+
+// Test additional model methods and report functionality
+func TestReconciliationReport_AdditionalMethods(t *testing.T) {
+	t.Run("should correctly determine severity levels", func(t *testing.T) {
+		matchReport := &models.ReconciliationReport{
+			Status: models.ReconciliationStatusMatch,
+		}
+		if matchReport.GetSeverity() != "INFO" {
+			t.Errorf("Expected INFO severity for MATCH, got: %s", matchReport.GetSeverity())
+		}
+
+		mismatchReport := &models.ReconciliationReport{
+			Status: models.ReconciliationStatusMismatch,
+		}
+		if mismatchReport.GetSeverity() != "WARNING" {
+			t.Errorf("Expected WARNING severity for MISMATCH, got: %s", mismatchReport.GetSeverity())
+		}
+
+		errorReport := &models.ReconciliationReport{
+			Status: models.ReconciliationStatusDoubleEntryError,
+		}
+		if errorReport.GetSeverity() != "CRITICAL" {
+			t.Errorf("Expected CRITICAL severity for DOUBLE_ENTRY_ERROR, got: %s", errorReport.GetSeverity())
+		}
+	})
+
+	t.Run("should handle table name override", func(t *testing.T) {
+		report := &models.ReconciliationReport{}
+		if report.TableName() != "reconciliation_reports" {
+			t.Errorf("Expected table name 'reconciliation_reports', got: %s", report.TableName())
+		}
+	})
+}
+
+// Test error handling and recovery scenarios
+func TestReconciliationUseCase_ErrorHandling(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should handle repository errors gracefully", func(t *testing.T) {
+		// Test with invalid wallet ID that doesn't exist
+		_, err := reconciliationUC.PerformWalletReconciliation(99999)
+		if err == nil {
+			t.Error("Expected error for non-existent wallet")
+		}
+	})
+
+	t.Run("should handle bulk reconciliation with some failures", func(t *testing.T) {
+		// Bulk reconciliation should continue even if some wallets fail
+		reports, err := reconciliationUC.PerformReconciliation()
+
+		// Should not return error even if some individual reconciliations fail
+		if err != nil {
+			t.Errorf("Expected no error from bulk reconciliation, got: %v", err)
+		}
+
+		// Should still have some reports for wallets that succeeded
+		if len(reports) == 0 {
+			t.Error("Expected some reconciliation reports from bulk operation")
+		}
+	})
+
+	t.Run("should validate pagination parameters", func(t *testing.T) {
+		// Test with valid pagination
+		_, err := reconciliationUC.GetReconciliationReports(1, 10)
+		if err != nil {
+			t.Errorf("Expected no error with valid pagination, got: %v", err)
+		}
+
+		// Test with edge case pagination (page 0 should be handled by repository)
+		_, err = reconciliationUC.GetReconciliationReports(0, 10)
+		if err != nil {
+			t.Errorf("Expected repository to handle page 0, got: %v", err)
+		}
+	})
+}
+
+// Test performance and scalability scenarios
+func TestReconciliationUseCase_Performance(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should handle multiple wallets efficiently", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		// Create multiple test wallets
+		numWallets := 10
+		for i := 50; i < 50+numWallets; i++ {
+			user := &models.User{
+				ID:    uint(i),
+				Email: fmt.Sprintf("perf%d@example.com", i),
+				Name:  fmt.Sprintf("Performance User %d", i),
+			}
+			userRepo.Create(user)
+
+			wallet := &models.Wallet{
+				ID:       uint(i),
+				UserID:   uint(i),
+				Balance:  decimal.NewFromFloat(float64(i * 100)),
+				Currency: "USD",
+				Status:   models.WalletStatusActive,
+				Version:  0,
+			}
+			walletRepo.Create(wallet)
+
+			// Create matching transaction
+			tx := &models.Transaction{
+				WalletID: uint(i),
+				Amount:   decimal.NewFromFloat(float64(i * 100)),
+				Status:   models.TransactionStatusCompleted,
+			}
+			transactionRepo.Create(tx)
+		}
+
+		// Perform bulk reconciliation
+		reports, err := reconciliationUC.PerformReconciliation()
+		if err != nil {
+			t.Errorf("Expected no error with multiple wallets, got: %v", err)
+		}
+
+		// Should have reports for all wallets (including system wallet)
+		if len(reports) < numWallets {
+			t.Errorf("Expected at least %d reports, got: %d", numWallets, len(reports))
+		}
+
+		// Verify all reports are successful matches
+		matchCount := 0
+		for _, report := range reports {
+			if report.Status == models.ReconciliationStatusMatch {
+				matchCount++
+			}
+		}
+
+		// At least our test wallets should match
+		if matchCount < numWallets {
+			t.Errorf("Expected at least %d matching reports, got: %d", numWallets, matchCount)
+		}
+	})
+
+	t.Run("should handle wallets with many transactions", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    70,
+			Email: "manytx@example.com",
+			Name:  "Many Transactions User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       70,
+			UserID:   70,
+			Balance:  decimal.NewFromFloat(1000.00), // Final balance
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Create many transactions that sum to 1000
+		totalAmount := decimal.Zero
+		numTransactions := 20
+		amountPerTx := decimal.NewFromFloat(50.00) // 20 * 50 = 1000
+
+		for i := 0; i < numTransactions; i++ {
+			tx := &models.Transaction{
+				WalletID: 70,
+				Amount:   amountPerTx,
+				Status:   models.TransactionStatusCompleted,
+			}
+			transactionRepo.Create(tx)
+			totalAmount = totalAmount.Add(amountPerTx)
+		}
+
+		report, err := reconciliationUC.PerformWalletReconciliation(70)
+		if err != nil {
+			t.Errorf("Expected no error with many transactions, got: %v", err)
+		}
+
+		if report != nil {
+			if !report.CalculatedBalance.Equal(totalAmount) {
+				t.Errorf("Expected calculated balance %v, got: %v", totalAmount, report.CalculatedBalance)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH with many transactions, got: %v", report.Status)
+			}
+		}
+	})
+}
+
+// Test concurrent reconciliation scenarios (simulated)
+func TestReconciliationUseCase_Concurrency(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should handle sequential reconciliation requests", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+
+		user := &models.User{
+			ID:    80,
+			Email: "concurrent@example.com",
+			Name:  "Concurrent User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       80,
+			UserID:   80,
+			Balance:  decimal.NewFromFloat(500.00),
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Perform multiple reconciliations of the same wallet
+		numRuns := 5
+		for i := 0; i < numRuns; i++ {
+			report, err := reconciliationUC.PerformWalletReconciliation(80)
+			if err != nil {
+				t.Errorf("Run %d: Expected no error, got: %v", i+1, err)
+			}
+			if report == nil {
+				t.Errorf("Run %d: Expected reconciliation report", i+1)
+			}
+		}
+	})
+
+	t.Run("should maintain data consistency across operations", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    81,
+			Email: "consistency@example.com",
+			Name:  "Consistency User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       81,
+			UserID:   81,
+			Balance:  decimal.NewFromFloat(300.00),
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// First reconciliation (no transactions)
+		report1, err := reconciliationUC.PerformWalletReconciliation(81)
+		if err != nil {
+			t.Errorf("First reconciliation failed: %v", err)
+		}
+
+		// Add transaction
+		tx := &models.Transaction{
+			WalletID: 81,
+			Amount:   decimal.NewFromFloat(300.00),
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(tx)
+
+		// Second reconciliation (with transaction)
+		report2, err := reconciliationUC.PerformWalletReconciliation(81)
+		if err != nil {
+			t.Errorf("Second reconciliation failed: %v", err)
+		}
+
+		// Compare results
+		if report1 != nil && report2 != nil {
+			if report1.Status == report2.Status {
+				// Status changed from mismatch (no tx) to match (with tx)
+				if report1.Status != models.ReconciliationStatusMismatch ||
+					report2.Status != models.ReconciliationStatusMatch {
+					t.Error("Expected status to change from MISMATCH to MATCH after adding transaction")
+				}
+			}
+		}
+	})
+}
+
+// Test advanced reconciliation scenarios
+func TestReconciliationUseCase_AdvancedScenarios(t *testing.T) {
+	repos := setupReconciliationTestEnvironment()
+	reconciliationUC := NewReconciliationUseCase(repos)
+
+	t.Run("should detect complex balance mismatches", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    90,
+			Email: "complex@example.com",
+			Name:  "Complex Mismatch User",
+		}
+		userRepo.Create(user)
+
+		wallet := &models.Wallet{
+			ID:       90,
+			UserID:   90,
+			Balance:  decimal.NewFromFloat(1000.00), // Stored balance
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Create transactions that don't match stored balance
+		transactions := []decimal.Decimal{
+			decimal.NewFromFloat(200.00),  // +200
+			decimal.NewFromFloat(300.00),  // +300
+			decimal.NewFromFloat(-100.00), // -100
+			decimal.NewFromFloat(150.00),  // +150
+		}
+		// Net: 200 + 300 - 100 + 150 = 550 (vs stored 1000)
+
+		for _, amount := range transactions {
+			tx := &models.Transaction{
+				WalletID: 90,
+				Amount:   amount,
+				Status:   models.TransactionStatusCompleted,
+			}
+			transactionRepo.Create(tx)
+		}
+
+		report, err := reconciliationUC.PerformWalletReconciliation(90)
+		if err != nil {
+			t.Errorf("Expected no error, got: %v", err)
+		}
+
+		if report != nil {
+			expectedCalculated := decimal.NewFromFloat(550.00)
+			expectedDifference := decimal.NewFromFloat(450.00) // 1000 - 550
+
+			if !report.CalculatedBalance.Equal(expectedCalculated) {
+				t.Errorf("Expected calculated balance %v, got: %v", expectedCalculated, report.CalculatedBalance)
+			}
+
+			if !report.Difference.Equal(expectedDifference) {
+				t.Errorf("Expected difference %v, got: %v", expectedDifference, report.Difference)
+			}
+
+			if report.Status != models.ReconciliationStatusMismatch {
+				t.Errorf("Expected status MISMATCH, got: %v", report.Status)
+			}
+
+			if !containsString(report.Notes, "Balance mismatch detected") {
+				t.Errorf("Expected notes to mention balance mismatch, got: %s", report.Notes)
+			}
+		}
+	})
+
+	t.Run("should handle precision edge cases", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    91,
+			Email: "precision@example.com",
+			Name:  "Precision User",
+		}
+		userRepo.Create(user)
+
+		// Use precise decimal values
+		preciseBalance := decimal.NewFromFloat(123.456789)
+		wallet := &models.Wallet{
+			ID:       91,
+			UserID:   91,
+			Balance:  preciseBalance,
+			Currency: "USD",
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		// Create matching precise transaction
+		preciseTx := &models.Transaction{
+			WalletID: 91,
+			Amount:   preciseBalance,
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(preciseTx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(91)
+		if err != nil {
+			t.Errorf("Expected no error with precise values, got: %v", err)
+		}
+
+		if report != nil {
+			if !report.Difference.IsZero() {
+				t.Errorf("Expected zero difference with precise matching values, got: %v", report.Difference)
+			}
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH with precise values, got: %v", report.Status)
+			}
+		}
+	})
+
+	t.Run("should handle currency-specific scenarios", func(t *testing.T) {
+		userRepo := repos.User.(*MockUserRepository)
+		walletRepo := repos.Wallet.(*MockWalletRepository)
+		transactionRepo := repos.Transaction.(*MockTransactionRepository)
+
+		user := &models.User{
+			ID:    92,
+			Email: "currency@example.com",
+			Name:  "Currency User",
+		}
+		userRepo.Create(user)
+
+		// Different currency wallet
+		wallet := &models.Wallet{
+			ID:       92,
+			UserID:   92,
+			Balance:  decimal.NewFromFloat(100.00),
+			Currency: "EUR", // Different currency
+			Status:   models.WalletStatusActive,
+			Version:  0,
+		}
+		walletRepo.Create(wallet)
+
+		tx := &models.Transaction{
+			WalletID: 92,
+			Amount:   decimal.NewFromFloat(100.00),
+			Status:   models.TransactionStatusCompleted,
+		}
+		transactionRepo.Create(tx)
+
+		report, err := reconciliationUC.PerformWalletReconciliation(92)
+		if err != nil {
+			t.Errorf("Expected no error with different currency, got: %v", err)
+		}
+
+		if report != nil {
+			// Should still reconcile correctly regardless of currency
+			if report.Status != models.ReconciliationStatusMatch {
+				t.Errorf("Expected status MATCH regardless of currency, got: %v", report.Status)
 			}
 		}
 	})
