@@ -83,8 +83,6 @@ SYSTEM_ACCOUNT_EMAIL=system@walletservice.com
 
 ## 🏃‍♂️ Running the Project
 
-### Development Mode
-
 1. **Set up environment variables**
    ```bash
    export $(cat .env | xargs)
@@ -98,30 +96,6 @@ SYSTEM_ACCOUNT_EMAIL=system@walletservice.com
 3. **Alternative: Use Makefile (if available)**
    ```bash
    make run
-   ```
-
-### Production Mode
-
-1. **Build the application**
-   ```bash
-   go build -o bin/wallet-service cmd/main.go
-   ```
-
-2. **Run the binary**
-   ```bash
-   ./bin/wallet-service
-   ```
-
-### Using Docker (if Dockerfile is available)
-
-1. **Build Docker image**
-   ```bash
-   docker build -t wallet-service .
-   ```
-
-2. **Run with Docker Compose**
-   ```bash
-   docker-compose up -d
    ```
 
 ## 📊 API Documentation
@@ -162,116 +136,6 @@ golangci-lint run
 # Vet code
 go vet ./...
 ```
-
-### Adding New Features
-
-1. **Create feature branch**
-   ```bash
-   git checkout -b feature/new-feature
-   ```
-
-2. **Write tests first** (TDD approach)
-   ```bash
-   # Add tests in appropriate test files
-   go test -v ./internal/usecases -run="TestNewFeature"
-   ```
-
-3. **Implement feature**
-   ```bash
-   # Implement the feature
-   go test ./... # Ensure all tests pass
-   ```
-
-4. **Commit and push**
-   ```bash
-   git add .
-   git commit -m "feat: add new feature"
-   git push origin feature/new-feature
-   ```
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Issues**
-   ```bash
-   # Check if PostgreSQL is running
-   sudo systemctl status postgresql
-   
-   # Verify database exists
-   psql -h localhost -U wallet_user -d wallet_service
-   ```
-
-2. **Port Already in Use**
-   ```bash
-   # Find process using port 8080
-   lsof -i :8080
-   
-   # Kill process
-   kill -9 <PID>
-   ```
-
-3. **Environment Variables Not Loaded**
-   ```bash
-   # Verify .env file exists and is readable
-   cat .env
-   
-   # Source environment variables
-   source .env
-   ```
-
-4. **Test Failures**
-   ```bash
-   # Run specific failing test
-   go test -v ./internal/usecases -run="TestSpecificFunction"
-   
-   # Clear test cache
-   go clean -testcache
-   ```
-
-### Debug Mode
-
-```bash
-# Run with debug logging
-LOG_LEVEL=debug go run cmd/main.go
-
-# Run tests with verbose output
-go test -v ./... -count=1
-```
-
-## 📈 Performance
-
-### Benchmarking
-
-```bash
-# Run benchmarks
-go test -bench=. ./...
-
-# Run specific benchmark
-go test -bench=BenchmarkWalletOperation ./internal/usecases
-```
-
-### Profiling
-
-```bash
-# CPU profiling
-go test -cpuprofile=cpu.prof -bench=. ./...
-
-# Memory profiling
-go test -memprofile=mem.prof -bench=. ./...
-
-# View profiles
-go tool pprof cpu.prof
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Write tests for your changes
-4. Implement your changes
-5. Ensure all tests pass
-6. Submit a pull request
 
 ## 📝 License
 
